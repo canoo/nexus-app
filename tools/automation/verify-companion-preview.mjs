@@ -90,21 +90,42 @@ try {
     assert.equal(result.stdout.readUInt32LE(0), result.stdout.length - 4);
     assert.deepEqual(JSON.parse(result.stdout.subarray(4)), { schema_version: 1, ok: false });
   }
-  const helper = spawnSync(process.execPath, [join(root, "host/tools/mcp/companion-data.mjs"), "status"], { env, encoding: "utf8", timeout: 10000 });
-  assert.equal(helper.status, 1);
-  assert.deepEqual(JSON.parse(helper.stdout), { schemaVersion: 1, ok: false, error: "companion_store_unavailable" });
+  // The CLI-owned data helper is no longer staged: the packaged host's
+  // vendored store is the store-initialization path. A missing store must
+  // fail closed (prune refuses a missing store) without creating anything,
+  // and migrate() on a fresh HOME must create the v5 schema with collection
+  // disabled and no consents. Re-migration is a no-op.
+  const storeEnv = { ...env, NEXUS_VERIFY_STORE: join(root, "host/vendor/observability-store/lib/observability-store.mjs") };
+  const probe = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const { createObservabilityStore } = await import(process.env.NEXUS_VERIFY_STORE);
+    try { createObservabilityStore().pruneToolActivity(); process.exit(2); }
+    catch (error) { if (error.message !== 'companion_store_unavailable') process.exit(3); }
+  `], { env: storeEnv, encoding: "utf8", timeout: 10000 });
+  assert.equal(probe.status, 0);
   assert.equal(existsSync(join(home, ".config")), false);
-  const initialized = spawnSync(process.execPath, [join(root, "host/tools/mcp/companion-data.mjs"), "initialize", "--confirm"], { env, encoding: "utf8", timeout: 10000 });
+  const initialized = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const { createObservabilityStore } = await import(process.env.NEXUS_VERIFY_STORE);
+    createObservabilityStore().migrate();
+  `], { env: storeEnv, encoding: "utf8", timeout: 10000 });
   assert.equal(initialized.status, 0);
-  assert.deepEqual(JSON.parse(initialized.stdout), { schemaVersion: 1, ok: true, action: "initialize", retentionDays: 14, storedSpans: 0 });
   const database = new DatabaseSync(join(home, ".config/nexus/logs/observability.sqlite"), { readOnly: true });
   try {
     assert.equal(database.prepare("SELECT collection_enabled FROM companion_settings WHERE id=1").get().collection_enabled, 0);
     assert.equal(database.prepare("SELECT COUNT(*) n FROM companion_tool_consents").get().n, 0);
+    assert.equal(database.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v, 5);
   } finally { database.close(); }
-  const repeated = spawnSync(process.execPath, [join(root, "host/tools/mcp/companion-data.mjs"), "initialize", "--confirm"], { env, encoding: "utf8", timeout: 10000 });
-  assert.equal(repeated.status, 1);
-  assert.equal(JSON.parse(repeated.stdout).error, "companion_store_exists");
+  const repeated = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const { createObservabilityStore } = await import(process.env.NEXUS_VERIFY_STORE);
+    import { DatabaseSync } from 'node:sqlite';
+    import { join } from 'node:path';
+    createObservabilityStore().migrate();
+    const db = new DatabaseSync(join(process.env.HOME, '.config/nexus/logs/observability.sqlite'), { readOnly: true });
+    try {
+      if (db.prepare('SELECT collection_enabled FROM companion_settings WHERE id=1').get().collection_enabled !== 0) process.exit(2);
+      if (db.prepare('SELECT COUNT(*) n FROM companion_tool_consents').get().n !== 0) process.exit(3);
+    } finally { db.close(); }
+  `], { env: storeEnv, encoding: "utf8", timeout: 10000 });
+  assert.equal(repeated.status, 0);
   // Run the same old-store process regressions against this exact archived host,
   // rather than staging another copy from the checkout.
   const upgradeTests = new URL('../../apps/companion-native-host/test/packaged-upgrade.test.mjs', import.meta.url);
@@ -112,5 +133,5 @@ try {
     env: {...env, NEXUS_TEST_HOST_PAYLOAD: join(root, 'host')}, encoding: 'utf8', timeout: 30000, maxBuffer: 65536,
   });
   assert.equal(upgrade.status, 0, upgrade.stdout + upgrade.stderr);
-  process.stdout.write("Preview hashes/modes, unpacked extension policy/version, packaged executable, runtime binding, fail-closed host/helper and confirmed fresh setup and old-store upgrade checks passed; GUI not launched.\n");
+  process.stdout.write("Preview hashes/modes, unpacked extension policy/version, packaged executable, runtime binding, fail-closed host/store and confirmed fresh setup and old-store upgrade checks passed; GUI not launched.\n");
 } finally { rmSync(directory, { recursive: true, force: true }); }

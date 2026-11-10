@@ -9,8 +9,6 @@ export const NATIVE_HOST_PAYLOAD_FILES = Object.freeze([
   "docs/companion-support-matrix.md",
   "docs/companion-functional-controls.md",
   "docs/nexus-companion.md",
-  "docs/observability-schema.md",
-  "docs/v0.3.0-work-tracker.md",
   "apps/companion-native-host/README.md",
   "apps/companion-native-host/package.json",
   "apps/companion-native-host/bin/nexus-companion-native-host-chrome.mjs",
@@ -18,16 +16,21 @@ export const NATIVE_HOST_PAYLOAD_FILES = Object.freeze([
   "apps/companion-native-host/bin/nexus-companion-native-host-registration.mjs",
   "apps/companion-native-host/lib/host.mjs",
   "apps/companion-native-host/lib/control.mjs",
+  "apps/companion-native-host/lib/cli-location.mjs",
   "apps/companion-browser-extension/lib/control.js",
   "apps/companion-browser-extension/package.json",
   "apps/companion-native-host/lib/native-messaging.mjs",
   "apps/companion-native-host/lib/platform-support.mjs",
   "apps/companion-native-host/lib/registration.mjs",
-  "tools/mcp/companion-data.mjs",
-  "tools/mcp/companion-controls.mjs",
-  "tools/mcp/lib/observability-store.mjs",
+  // Pinned vendored store (contract A). The CLI-owned helpers
+  // (companion-data.mjs / companion-controls.mjs) are NOT staged: the CLI
+  // owns them and serves them through `nexus control --json` (protocol v1).
+  // The record path uses the vendored store because protocol v1 has no
+  // record operation. See vendor/observability-store/README.md.
+  "vendor/observability-store/lib/observability-store.mjs",
+  "vendor/observability-store/README.md",
 ]);
-const MIGRATIONS_PATH = "tools/mcp/migrations";
+const MIGRATIONS_PATH = "vendor/observability-store/migrations";
 const SAFE_CODES = new Set(["package_input_invalid", "package_output_exists", "package_source_invalid", "package_write_failed"]);
 
 function failure(code) { return new Error(code); }

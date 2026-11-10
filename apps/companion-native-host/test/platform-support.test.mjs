@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { createObservabilityStore } from "../../../tools/mcp/lib/observability-store.mjs";
+import { createObservabilityStore } from "../../../vendor/observability-store/lib/observability-store.mjs";
 import { nativeHostRuntimeSupported } from "../lib/platform-support.mjs";
 import { stageNativeHostPackage } from "../lib/package.mjs";
 import { encodeNativeMessage } from "../lib/native-messaging.mjs";

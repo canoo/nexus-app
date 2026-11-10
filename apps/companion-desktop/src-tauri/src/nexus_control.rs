@@ -7,7 +7,7 @@ use std::{
     ffi::OsString,
     fs,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::mpsc::{self, TryRecvError},
     thread,
@@ -23,47 +23,105 @@ const DEADLINE: Duration = Duration::from_secs(10 * 60);
 #[derive(Debug)]
 struct ControlPaths {
     binary: PathBuf,
-    root: PathBuf,
+    root: Option<PathBuf>,
 }
 impl ControlPaths {
+    // Binary-first CLI location (sharing contract A): the installed `nexus`
+    // binary is resolved before any repo checkout is considered. The root is
+    // only a fallback for operations the binary cannot do without the CLI
+    // tree; when it is absent the desktop runs binary-only and the CLI
+    // resolves its own default repo (the curl installer's clone).
     fn configured(binary: Option<OsString>, root: Option<OsString>) -> Result<Self, &'static str> {
-        let binary = PathBuf::from(binary.ok_or(UNAVAILABLE)?);
-        let root = PathBuf::from(root.ok_or(UNAVAILABLE)?);
-        if !binary.is_absolute() || !root.is_absolute() {
-            return Err(UNAVAILABLE);
-        }
-        let binary_stat = fs::metadata(&binary).map_err(|_| UNAVAILABLE)?;
-        if !binary_stat.is_file() || !root.is_dir() {
-            return Err(UNAVAILABLE);
-        }
-        // A native-host payload intentionally contains neither sentinel. Pin
-        // config/install operations to the full NEXUS root, never that payload.
-        for marker in ["core/NEXUS.md", "tools/mcp/server.mjs"] {
-            if !fs::symlink_metadata(root.join(marker))
-                .map(|metadata| metadata.file_type().is_file())
-                .unwrap_or(false)
-            {
-                return Err(UNAVAILABLE);
+        let home = env::var_os("HOME").map(PathBuf::from);
+        Self::configured_env(
+            binary,
+            root,
+            &env::var("PATH").unwrap_or_default(),
+            home.as_deref(),
+        )
+    }
+    fn configured_env(
+        binary: Option<OsString>,
+        root: Option<OsString>,
+        path_var: &str,
+        home: Option<&Path>,
+    ) -> Result<Self, &'static str> {
+        let binary = match binary {
+            Some(value) => {
+                let path = PathBuf::from(value);
+                if !path.is_absolute() || !is_executable_file(&path) {
+                    return Err(UNAVAILABLE);
+                }
+                fs::canonicalize(path).map_err(|_| UNAVAILABLE)?
             }
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if binary_stat.permissions().mode() & 0o111 == 0 {
-                return Err(UNAVAILABLE);
+            None => {
+                match find_on_path(path_var).or_else(|| {
+                    home.map(|dir| dir.join(".local/bin/nexus"))
+                        .filter(|path| is_executable_file(path))
+                }) {
+                    Some(path) => fs::canonicalize(path).map_err(|_| UNAVAILABLE)?,
+                    None => return Err(UNAVAILABLE),
+                }
             }
-        }
+        };
+        // An explicitly configured root must be the trusted full NEXUS
+        // repository. A native-host payload intentionally contains neither
+        // sentinel. Pin config/install operations to the full NEXUS root,
+        // never that payload.
+        let root = match root {
+            Some(value) => {
+                let path = PathBuf::from(value);
+                if !path.is_absolute() || !path.is_dir() {
+                    return Err(UNAVAILABLE);
+                }
+                for marker in ["core/NEXUS.md", "tools/mcp/server.mjs"] {
+                    if !fs::symlink_metadata(path.join(marker))
+                        .map(|metadata| metadata.file_type().is_file())
+                        .unwrap_or(false)
+                    {
+                        return Err(UNAVAILABLE);
+                    }
+                }
+                Some(fs::canonicalize(path).map_err(|_| UNAVAILABLE)?)
+            }
+            None => None,
+        };
         // The desktop currently supports native Unix hosts. Fail closed where
         // process-group cancellation is unavailable rather than killing only
         // the service while an install/update descendant continues running.
         if !cfg!(unix) {
             return Err(UNAVAILABLE);
         }
-        Ok(Self {
-            binary: fs::canonicalize(binary).map_err(|_| UNAVAILABLE)?,
-            root: fs::canonicalize(root).map_err(|_| UNAVAILABLE)?,
-        })
+        Ok(Self { binary, root })
     }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path)
+            .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+fn find_on_path(path_var: &str) -> Option<PathBuf> {
+    for directory in path_var.split(':') {
+        if directory.is_empty() {
+            continue;
+        }
+        let candidate = Path::new(directory).join("nexus");
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn request_bytes(request: &Value) -> Result<Vec<u8>, &'static str> {
@@ -190,13 +248,16 @@ fn execute_at(
     let mut command = Command::new(&paths.binary);
     command
         .args(["control", "--json"])
-        .current_dir(&paths.root)
-        // Installed Companion helpers may use a host-only NEXUS_REPO. The
-        // shared engine must instead receive its explicitly trusted full root.
-        .env("NEXUS_REPO", &paths.root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some(root) = &paths.root {
+        // Installed Companion helpers may use a host-only NEXUS_REPO. The
+        // shared engine must instead receive its explicitly trusted full
+        // root. Binary-only runs inherit the caller's directory and
+        // environment, and the CLI resolves its own default repo.
+        command.current_dir(root).env("NEXUS_REPO", root);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -273,12 +334,23 @@ fn execute_at(
     }
 }
 
-pub fn run(request: Value) -> Result<Value, &'static str> {
-    let paths = ControlPaths::configured(
+fn control_env() -> (Option<OsString>, Option<OsString>) {
+    (
         env::var_os("NEXUS_CONTROL_BINARY"),
-        env::var_os("NEXUS_CONTROL_ROOT"),
-    )?;
+        env::var_os("NEXUS_CONTROL_ROOT").or_else(|| env::var_os("NEXUS_REPO")),
+    )
+}
+
+pub fn run(request: Value) -> Result<Value, &'static str> {
+    let (binary, root) = control_env();
+    let paths = ControlPaths::configured(binary, root)?;
     execute_at(&paths, request, DEADLINE)
+}
+
+/// True when a usable control binary resolves, with or without a repo root.
+pub fn available() -> bool {
+    let (binary, root) = control_env();
+    ControlPaths::configured(binary, root).is_ok()
 }
 
 #[cfg(all(test, unix))]
@@ -338,8 +410,13 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
-        let paths =
-            ControlPaths::configured(Some(binary.into()), Some(directory.clone().into())).unwrap();
+        let paths = ControlPaths::configured_env(
+            Some(binary.into()),
+            Some(directory.clone().into()),
+            "/nonexistent",
+            None,
+        )
+        .unwrap();
         Fixture { directory, paths }
     }
     fn request() -> Value {
@@ -350,22 +427,101 @@ mod tests {
     fn configured_paths_require_absolute_existing_executable_and_root() {
         let f = fixture("");
         let binary = Some(f.paths.binary.clone().into());
-        let root = Some(f.paths.root.clone().into());
-        assert!(ControlPaths::configured(None, root.clone()).is_err());
-        assert!(ControlPaths::configured(binary.clone(), None).is_err());
+        let root = Some(f.paths.root.clone().unwrap().into());
+        // No binary anywhere: explicit, PATH, and legacy default all miss.
+        assert!(ControlPaths::configured_env(None, root.clone(), "/nonexistent", None).is_err());
+        // Binary-only mode is valid: the root is an optional fallback.
+        let binary_only =
+            ControlPaths::configured_env(binary.clone(), None, "/nonexistent", None).unwrap();
+        assert!(binary_only.root.is_none());
         for bad in ["", "node", "/nonexistent-nexus-control"] {
-            assert!(ControlPaths::configured(Some(bad.into()), root.clone()).is_err());
-            assert!(ControlPaths::configured(binary.clone(), Some(bad.into())).is_err());
+            assert!(ControlPaths::configured_env(
+                Some(bad.into()),
+                root.clone(),
+                "/nonexistent",
+                None
+            )
+            .is_err());
+            assert!(ControlPaths::configured_env(
+                binary.clone(),
+                Some(bad.into()),
+                "/nonexistent",
+                None
+            )
+            .is_err());
         }
-        assert!(ControlPaths::configured(root.clone(), root.clone()).is_err());
-        assert!(ControlPaths::configured(binary.clone(), binary.clone()).is_err());
+        assert!(
+            ControlPaths::configured_env(root.clone(), root.clone(), "/nonexistent", None).is_err()
+        );
+        assert!(
+            ControlPaths::configured_env(binary.clone(), binary.clone(), "/nonexistent", None)
+                .is_err()
+        );
         let payload_only = f.directory.join("host-only");
         fs::create_dir(&payload_only).unwrap();
-        assert!(ControlPaths::configured(binary.clone(), Some(payload_only.into())).is_err());
+        assert!(ControlPaths::configured_env(
+            binary.clone(),
+            Some(payload_only.into()),
+            "/nonexistent",
+            None
+        )
+        .is_err());
         let inert = f.directory.join("nonexecutable");
         fs::write(&inert, "private").unwrap();
         fs::set_permissions(&inert, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(ControlPaths::configured(Some(inert.into()), root).is_err());
+        assert!(
+            ControlPaths::configured_env(Some(inert.into()), root, "/nonexistent", None).is_err()
+        );
+    }
+
+    #[test]
+    fn binary_resolves_from_path_then_legacy_home_default() {
+        let f = fixture("");
+        let path_dir = f.directory.join("path-bin");
+        fs::create_dir(&path_dir).unwrap();
+        let on_path = path_dir.join("nexus");
+        fs::write(&on_path, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&on_path, fs::Permissions::from_mode(0o700)).unwrap();
+        let found =
+            ControlPaths::configured_env(None, None, path_dir.to_str().unwrap(), None).unwrap();
+        assert_eq!(found.binary, fs::canonicalize(&on_path).unwrap());
+        assert!(found.root.is_none());
+        // A non-executable `nexus` on PATH is skipped for the legacy default.
+        fs::set_permissions(&on_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let home = f.directory.join("home");
+        fs::create_dir_all(home.join(".local/bin")).unwrap();
+        let legacy = home.join(".local/bin/nexus");
+        fs::write(&legacy, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&legacy, fs::Permissions::from_mode(0o700)).unwrap();
+        let found =
+            ControlPaths::configured_env(None, None, path_dir.to_str().unwrap(), Some(&home))
+                .unwrap();
+        assert_eq!(found.binary, fs::canonicalize(&legacy).unwrap());
+    }
+
+    #[test]
+    fn binary_only_execute_delivers_the_request_without_a_root() {
+        let f = fixture(
+            r#"
+            import { readFileSync } from 'node:fs';
+            const request = JSON.parse(readFileSync(0, 'utf8'));
+            process.stdout.write(JSON.stringify({schemaVersion:1,ok:true,operation:request.operation,result:{binaryOnly:true,cwd:process.cwd()}})+'\n');
+        "#,
+        );
+        let paths = ControlPaths::configured_env(
+            Some(f.paths.binary.clone().into()),
+            None,
+            "/nonexistent",
+            None,
+        )
+        .unwrap();
+        assert!(paths.root.is_none());
+        let result = execute_at(&paths, request(), Duration::from_secs(3)).unwrap();
+        assert_eq!(result["result"]["binaryOnly"], true);
+        assert_ne!(
+            result["result"]["cwd"].as_str().unwrap(),
+            f.directory.to_str().unwrap()
+        );
     }
 
     #[test]

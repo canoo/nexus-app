@@ -150,8 +150,9 @@ registration/uninstall against isolated HOME directories, including a package
 path containing spaces. They do not establish live browser compatibility.
 
 See [platform evidence](../../docs/companion-support-matrix.md). Desktop data
-controls can find the staged shared helper via `NEXUS_REPO` set to its absolute
-root; live desktop invocation and installer configuration remain release gates.
+controls reach the CLI through the installed binary (`nexus control --json`);
+the staged payload no longer carries the CLI's data helper. Live desktop
+invocation and installer configuration remain release gates.
 
 ## Unsupported runtime environments
 
@@ -197,8 +198,10 @@ On Linux it also generates `nexus-companion-native-host-chromium`, which runs
 the same Chrome-family host with the pinned Node executable; macOS gets no
 Chromium wrapper. Use each browser's corresponding absolute wrapper path as
 `--host-path` when explicitly registering it. The generated `nexus-companion` script invokes the chosen desktop
-binary and sets `NEXUS_REPO`, `NEXUS_COMPANION_NODE` and
-`NEXUS_COMPANION_NATIVE_HOST_REGISTRATION_HELPER` to the installed paths.
+binary and sets `NEXUS_COMPANION_NODE` and
+`NEXUS_COMPANION_NATIVE_HOST_REGISTRATION_HELPER` to the installed paths. It
+no longer sets `NEXUS_REPO`: the packaged payload is not a CLI repository,
+and the desktop resolves the installed binary and any repo fallback itself.
 Desktop data and registration helpers use this pinned runtime, so these
 launchers do not need Node on the browser or desktop environment's PATH.
 
@@ -215,7 +218,10 @@ and live browser verification remain release gates.
 
 ## Packaged command-line policy controls
 
-The payload includes `tools/mcp/companion-controls.mjs` alongside the existing data
-helper. It provides fixed status, explicit per-tool policy grants/revokes, pause,
-resume and confirmed disable without the desktop process. Use the matching NEXUS
-CLI and pinned runtime; see [functional control commands](../../docs/companion-functional-controls.md).
+The payload includes the vendored observability store
+(`vendor/observability-store/`, a pinned copy of the CLI's store and
+migrations) instead of the CLI's helpers. Policy controls — fixed status,
+explicit per-tool policy grants/revokes, pause, resume and confirmed disable
+— go through the installed CLI (`nexus companion` / `nexus control --json`,
+protocol v1) without the desktop process. Use the matching NEXUS CLI and
+pinned runtime; see [functional control commands](../../docs/companion-functional-controls.md).

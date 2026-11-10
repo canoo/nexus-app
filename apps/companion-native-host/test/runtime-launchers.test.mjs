@@ -8,7 +8,7 @@ import test from "node:test";
 import { stageNativeHostPackage } from "../lib/package.mjs";
 import { createRuntimeLaunchers } from "../lib/runtime-launchers.mjs";
 import { encodeNativeMessage } from "../lib/native-messaging.mjs";
-import { createObservabilityStore } from "../../../tools/mcp/lib/observability-store.mjs";
+import { createObservabilityStore } from "../../../vendor/observability-store/lib/observability-store.mjs";
 
 const CLI = join(import.meta.dirname, "../bin/nexus-companion-runtime-launchers.mjs");
 function quote(value) { return `'${value.replaceAll("'", "'\\''")}'`; }
@@ -21,10 +21,26 @@ function fixture(t) {
   mkdirSync(home);
   const outputDir = join(directory, "launchers ' with spaces");
   const desktopPath = join(directory, "fake desktop ' binary");
+  // Stand-in for the real desktop: reports the environment the launcher
+  // pinned and probes the shared store's existence without creating it.
+  // The launcher no longer exports a repo root (NEXUS_REPO/NEXUS_CONTROL_ROOT):
+  // the packaged payload is not a CLI repository, and the desktop resolves
+  // the installed binary and any repo fallback itself.
   const fakeDesktopCode = `
-    import {spawnSync} from 'node:child_process';
-    const result = spawnSync(process.env.NEXUS_COMPANION_NODE, [process.env.NEXUS_REPO+'/tools/mcp/companion-data.mjs', 'status'], {encoding:'utf8', stdio:['ignore','pipe','ignore']});
-    process.stdout.write(JSON.stringify({root:process.env.NEXUS_REPO,node:process.env.NEXUS_COMPANION_NODE,registration:process.env.NEXUS_COMPANION_NATIVE_HOST_REGISTRATION_HELPER,args:process.argv.slice(1),status:JSON.parse(result.stdout)}));
+    import { existsSync } from 'node:fs';
+    import { join } from 'node:path';
+    import { DatabaseSync } from 'node:sqlite';
+    const databasePath = join(process.env.HOME, '.config/nexus/logs/observability.sqlite');
+    let status;
+    if (!existsSync(databasePath)) {
+      status = { schemaVersion: 1, ok: false, error: 'companion_store_unavailable' };
+    } else {
+      const db = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        status = { schemaVersion: 1, ok: true, action: 'status', retentionDays: db.prepare('SELECT raw_span_retention_days FROM companion_settings WHERE id=1').get().raw_span_retention_days, storedSpans: db.prepare('SELECT COUNT(*) AS n FROM tool_activity').get().n };
+      } finally { db.close(); }
+    }
+    process.stdout.write(JSON.stringify({controlRoot: process.env.NEXUS_CONTROL_ROOT ?? null, repo: process.env.NEXUS_REPO ?? null, node: process.env.NEXUS_COMPANION_NODE, registration: process.env.NEXUS_COMPANION_NATIVE_HOST_REGISTRATION_HELPER, args: process.argv.slice(1), status}));
   `;
   writeFileSync(desktopPath, `#!/bin/sh\nexec ${quote(process.execPath)} --input-type=module -e ${quote(fakeDesktopCode)} -- "$@"\n`, { mode: 0o755 });
   chmodSync(desktopPath, 0o755);
@@ -51,7 +67,7 @@ test("desktop launcher preserves literal paths/args and pins helpers with no nod
   quiet(result);
   const reply = JSON.parse(result.stdout.toString());
   assert.deepEqual(reply, {
-    root: realpathSync(f.runtimeRoot), node: realpathSync(f.nodePath),
+    controlRoot: null, repo: null, node: realpathSync(f.nodePath),
     registration: join(realpathSync(f.runtimeRoot), "apps/companion-native-host/bin/nexus-companion-native-host-registration.mjs"),
     args, status: { schemaVersion: 1, ok: false, error: "companion_store_unavailable" },
   });

@@ -166,9 +166,14 @@ spans immediately; zero days keeps no raw activity. Clear requires an unchecked-
 default acknowledgement and does not change collection/consent policy, MCP task
 history, or project memory.
 
-Both desktop and CLI invoke `tools/mcp/companion-data.mjs`, which owns mutation
-through the observability store. The desktop finds this helper beneath an absolute
-`NEXUS_REPO`, otherwise `$HOME/.config/nexus/repo`, and requires Node.js 22.13+.
+The desktop drives data controls through the installed `nexus` binary
+(`nexus control --json`, protocol v1, `companion.command`), which owns mutation
+through the observability store. The binary resolves from `NEXUS_CONTROL_BINARY`,
+then `nexus` on PATH, then `$HOME/.local/bin/nexus`; a repo checkout is only a
+fallback (`NEXUS_CONTROL_ROOT`, otherwise the legacy `NEXUS_REPO`, otherwise
+`$HOME/.config/nexus/repo`). When no usable binary resolves, the desktop falls
+back to running the CLI's `tools/mcp/companion-data.mjs` helper under that
+checkout, which requires Node.js 22.13+. The control path needs no Node.
 The optional `NEXUS_COMPANION_NODE` selects an absolute, existing Node executable
 for both data controls and native-host registration. An invalid configured path
 fails closed without falling back to PATH. When unset, source development uses

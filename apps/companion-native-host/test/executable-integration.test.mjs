@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { createObservabilityStore } from "../../../tools/mcp/lib/observability-store.mjs";
+import { createObservabilityStore } from "../../../vendor/observability-store/lib/observability-store.mjs";
 import { transitionSelectedTab } from "../../companion-browser-extension/lib/activity.js";
 import { encodeNativeMessage, MAX_NATIVE_MESSAGE_BYTES } from "../lib/native-messaging.mjs";
 

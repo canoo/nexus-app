@@ -117,7 +117,11 @@ mod tests {
         ] {
             database
                 .execute_batch(
-                    &fs::read_to_string(root.join("tools/mcp/migrations").join(name)).unwrap(),
+                    &fs::read_to_string(
+                        root.join("vendor/observability-store/migrations")
+                            .join(name),
+                    )
+                    .unwrap(),
                 )
                 .unwrap();
         }

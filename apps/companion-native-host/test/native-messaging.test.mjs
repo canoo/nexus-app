@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { createObservabilityStore } from "../../../tools/mcp/lib/observability-store.mjs";
+import { createObservabilityStore } from "../../../vendor/observability-store/lib/observability-store.mjs";
 import { CompanionNativeMessagingHost, validateHostActivityEnvelope } from "../lib/host.mjs";
 import { encodeNativeMessage, NativeMessageDecoder } from "../lib/native-messaging.mjs";
 import { createNativeHostManifest, manifestPath, nativeMessagingDirectory } from "../lib/registration.mjs";
