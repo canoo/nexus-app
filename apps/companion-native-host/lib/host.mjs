@@ -1,5 +1,9 @@
 import { handleControl } from "./control.mjs";
-import { createObservabilityStore, normalizeToolActivityEvent } from "../../../tools/mcp/lib/observability-store.mjs";
+// Pinned vendored copy of the CLI's observability store (contract A: the store
+// file format is the shared contract). Protocol v1 has no record operation,
+// so ingestion writes the shared SQLite database through this copy instead
+// of shelling out. See vendor/observability-store/README.md.
+import { createObservabilityStore, normalizeToolActivityEvent } from "../../../vendor/observability-store/lib/observability-store.mjs";
 import { NativeMessageDecoder, encodeNativeMessage } from "./native-messaging.mjs";
 import { nativeHostRuntimeSupported } from "./platform-support.mjs";
 

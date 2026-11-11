@@ -90,7 +90,7 @@ test("missing, unexpected or symlinked source files fail before creating output"
   const directory = temporaryDirectory(t);
   const sourceRoot = fixtureSource(directory);
   const outputDir = join(directory, "payload");
-  const migrations = join(sourceRoot, "tools/mcp/migrations");
+  const migrations = join(sourceRoot, "vendor/observability-store/migrations");
   const unexpected = join(migrations, "unexpected.txt");
   writeFileSync(unexpected, "private-fixture");
   assert.throws(() => stageNativeHostPackage({ sourceRoot, outputDir, version: VERSION }), /package_source_invalid/);
@@ -102,8 +102,8 @@ test("missing, unexpected or symlinked source files fail before creating output"
   rmSync(license);
   assert.throws(() => stageNativeHostPackage({ sourceRoot, outputDir, version: VERSION }), /package_source_invalid/);
   cpSync(join(directory, "baseline/LICENSE"), license);
-  rmSync(join(sourceRoot, "tools"), { recursive: true });
-  symlinkSync(join(directory, "baseline/tools"), join(sourceRoot, "tools"));
+  rmSync(join(sourceRoot, "vendor"), { recursive: true });
+  symlinkSync(join(directory, "baseline/vendor"), join(sourceRoot, "vendor"));
   assert.throws(() => stageNativeHostPackage({ sourceRoot, outputDir, version: VERSION }), /package_source_invalid/);
   assert.equal(existsSync(outputDir), false);
 });
@@ -128,7 +128,7 @@ test("package CLI validates flags and reports fixed errors without filesystem di
 });
 
 for (const browser of ["chrome", "edge"]) {
-  test(`relocated ${browser} package launches, ingests and exposes the shared helper independently`, (t) => {
+  test(`relocated ${browser} package launches, ingests and exposes the shared store independently`, (t) => {
     const directory = temporaryDirectory(t);
     const outputDir = join(directory, "relocated payload");
     stageNativeHostPackage({ outputDir, version: VERSION });
@@ -138,7 +138,7 @@ for (const browser of ["chrome", "edge"]) {
     const options = { env, cwd: outputDir, timeout: 10000, maxBuffer: 65536 };
     // Execute the packaged store and packaged migrations, never a fixture schema.
     const initialize = spawnSync(process.execPath, ["--input-type=module", "-e", `
-      import { createObservabilityStore } from './tools/mcp/lib/observability-store.mjs';
+      import { createObservabilityStore } from './vendor/observability-store/lib/observability-store.mjs';
       import { DatabaseSync } from 'node:sqlite';
       import { join } from 'node:path';
       const databasePath = join(process.env.HOME, '.config/nexus/logs/observability.sqlite');
@@ -165,9 +165,14 @@ for (const browser of ["chrome", "edge"]) {
     assertQuiet(result);
     assert.equal(result.stdout.readUInt32LE(0), result.stdout.length - 4);
     assert.deepEqual(JSON.parse(result.stdout.subarray(4).toString()), { schema_version: 1, ok: true });
-    const helper = spawnSync(process.execPath, [join(outputDir, "tools/mcp/companion-data.mjs"), "status"], options);
-    assertQuiet(helper);
-    assert.deepEqual(JSON.parse(helper.stdout.toString()), { schemaVersion: 1, ok: true, action: "status", retentionDays: 14, storedSpans: 1 });
+    // The CLI-owned data helper is no longer staged: read the status back
+    // from the shared store itself, which the packaged host just wrote
+    // through the vendored store.
+    const probe = new DatabaseSync(join(home, ".config/nexus/logs/observability.sqlite"), { readOnly: true });
+    try {
+      assert.equal(probe.prepare("SELECT raw_span_retention_days FROM companion_settings WHERE id=1").get().raw_span_retention_days, 14);
+      assert.equal(probe.prepare("SELECT COUNT(*) AS count FROM tool_activity").get().count, 1);
+    } finally { probe.close(); }
     const db = new DatabaseSync(join(home, ".config/nexus/logs/observability.sqlite"));
     try {
       assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tasks").get().count, 0);

@@ -1,11 +1,11 @@
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validRequest, validResponse } from '../../companion-browser-extension/lib/control.js';
+import { resolveControlBinary, resolveControlRoot } from './cli-location.mjs';
 import { installNativeHost, uninstallNativeHost } from './registration.mjs';
 const failure = (operation,error) => ({schemaVersion:1,operation,ok:false,error});
-export function handleControl(request, {run = spawnSync, home = homedir(), register = installNativeHost, unregister = uninstallNativeHost} = {}) {
+export function handleControl(request, {run = spawnSync, home = homedir(), env = process.env, register = installNativeHost, unregister = uninstallNativeHost, resolveBinary = resolveControlBinary, resolveRoot = resolveControlRoot} = {}) {
   const operation = typeof request?.operation === 'string' && request.operation.length < 100 ? request.operation : '';
   if (!validRequest(request)) return failure(operation,'request_invalid');
   try {
@@ -26,7 +26,14 @@ export function handleControl(request, {run = spawnSync, home = homedir(), regis
         params = {args: operation === 'memory.list' ? (p.project ? ['show',p.project] : ['list']) : operation === 'memory.show' ? ['show',p.project,p.name] : ['save',p.project,'--title',p.title,'--body',p.body]};
       }
       const input = JSON.stringify({schemaVersion:1,operation:op,params,confirm:request.confirm});
-      const child = run(join(home,'.local','bin','nexus'),['control','--json'],{input,encoding:'utf8',shell:false,timeout:11*60*1000,maxBuffer:750000,windowsHide:true});
+      // Binary-first CLI location: installed `nexus` (NEXUS_CONTROL_BINARY /
+      // PATH / ~/.local/bin/nexus). A repo checkout is only a fallback root
+      // for operations the binary cannot do without the CLI tree.
+      const binary = resolveBinary({home, env});
+      const root = resolveRoot({home, env});
+      const spawnOptions = {input,encoding:'utf8',shell:false,timeout:11*60*1000,maxBuffer:750000,windowsHide:true};
+      if (root) spawnOptions.env = {...env, NEXUS_REPO: root};
+      const child = run(binary,['control','--json'],spawnOptions);
       if (child.error || child.status !== 0) return failure(operation,'control_failed');
       const reply = JSON.parse(child.stdout);
       if (!reply || reply.schemaVersion !== 1 || reply.ok !== true || reply.operation !== op || Object.keys(reply).sort().join(',') !== 'ok,operation,result,schemaVersion') return failure(operation,'response_invalid');

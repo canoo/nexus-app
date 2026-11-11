@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { handleControl } from '../lib/control.mjs';
+import { resolveControlBinary, resolveControlRoot } from '../lib/cli-location.mjs';
 const request=(operation,params={},confirm=true)=>({kind:'nexus-control',schemaVersion:1,operation,params,confirm});
 test('Chrome companion controls use fixed arguments and JSON parser contract',()=>{
  for(const operation of ['companion.status','companion.pause','companion.resume','companion.disable','companion.consent']){
@@ -51,4 +55,28 @@ test('native Chrome registration is explicit and core replies cannot fake succes
   }});
   assert.equal(reply.error,'response_invalid');
  }
+});
+
+test('control binary resolution prefers NEXUS_CONTROL_BINARY, then PATH, then the legacy default', () => {
+  assert.equal(resolveControlBinary({home:'/fixture', env:{PATH:'/nonexistent', NEXUS_CONTROL_BINARY:'/pinned/nexus'}}), '/pinned/nexus');
+  assert.equal(resolveControlBinary({home:'/fixture', env:{PATH:'/nonexistent'}}), '/fixture/.local/bin/nexus');
+  assert.equal(resolveControlBinary({home:'/fixture', env:{}}), '/fixture/.local/bin/nexus');
+  const dir = mkdtempSync(join(tmpdir(), 'nexus-control-binary-'));
+  try {
+    const binary = join(dir, 'nexus');
+    writeFileSync(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    chmodSync(binary, 0o755);
+    assert.equal(resolveControlBinary({home:'/fixture', env:{PATH: dir}}), binary);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  // A repo checkout is a fallback root only when it carries the CLI markers.
+  assert.equal(resolveControlRoot({home:'/fixture', env:{}}), null);
+  assert.equal(resolveControlRoot({home:'/fixture', env:{NEXUS_CONTROL_ROOT:'/nonexistent'}}), null);
+  const root = mkdtempSync(join(tmpdir(), 'nexus-control-root-'));
+  try {
+    mkdirSync(join(root, 'core'), { recursive: true });
+    mkdirSync(join(root, 'tools/mcp'), { recursive: true });
+    writeFileSync(join(root, 'core/NEXUS.md'), 'fixture');
+    writeFileSync(join(root, 'tools/mcp/server.mjs'), 'fixture');
+    assert.equal(resolveControlRoot({home:'/fixture', env:{NEXUS_CONTROL_ROOT: root}}), root);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

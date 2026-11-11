@@ -833,10 +833,13 @@ mod tests {
         );
     }
 
+    // Bundled migration SQL matching the pinned minimum CLI version
+    // (contract A). The CLI owns the schema; these are copies, never edits.
+    // See vendor/observability-store/README.md.
     const COMPANION_MIGRATIONS: &str = concat!(
-        include_str!("../../../../tools/mcp/migrations/004_companion-activity.sql"),
+        include_str!("../../../../vendor/observability-store/migrations/004_companion-activity.sql"),
         "\n",
-        include_str!("../../../../tools/mcp/migrations/005_companion-collection-boundary.sql")
+        include_str!("../../../../vendor/observability-store/migrations/005_companion-collection-boundary.sql")
     );
 
     #[test]
@@ -858,7 +861,7 @@ mod tests {
             }
         }
         let _cleanup = Cleanup(home.clone());
-        let setup = Command::new("node").args(["--input-type=module", "-e", "import {createObservabilityStore} from './tools/mcp/lib/observability-store.mjs';createObservabilityStore().migrate();"])
+        let setup = Command::new("node").args(["--input-type=module", "-e", "import {createObservabilityStore} from './vendor/observability-store/lib/observability-store.mjs';createObservabilityStore().migrate();"])
             .env("HOME", &home).current_dir(&root).output().unwrap();
         assert!(setup.status.success());
         let mut database =
@@ -879,7 +882,7 @@ mod tests {
             )
             .unwrap();
         let ingest = |start: &str, expect: &str| {
-            let script = "import {createObservabilityStore} from './tools/mcp/lib/observability-store.mjs';const start=process.argv[1],end=new Date(Date.parse(start)+1000).toISOString();const store=createObservabilityStore({now:()=>Date.parse(end)});const r=store.recordToolActivity({tool_id:'chatgpt',surface:'browser',started_at:start,ended_at:end,detector:'selected-browser-tab',confidence:'surface-active',browser_family:'chrome',platform:'linux',schema_version:1,consent_policy_version:1});process.stdout.write(r.sqlite.ok?'accepted':r.sqlite.error);";
+            let script = "import {createObservabilityStore} from './vendor/observability-store/lib/observability-store.mjs';const start=process.argv[1],end=new Date(Date.parse(start)+1000).toISOString();const store=createObservabilityStore({now:()=>Date.parse(end)});const r=store.recordToolActivity({tool_id:'chatgpt',surface:'browser',started_at:start,ended_at:end,detector:'selected-browser-tab',confidence:'surface-active',browser_family:'chrome',platform:'linux',schema_version:1,consent_policy_version:1});process.stdout.write(r.sqlite.ok?'accepted':r.sqlite.error);";
             let result = Command::new("node")
                 .args(["--input-type=module", "-e", script, start])
                 .env("HOME", &home)

@@ -44,7 +44,7 @@ for (const browser of ['chrome', 'edge']) {
       assert.ok(dbPath.startsWith(home), 'databasePath must start with isolated HOME');
       mkdirSync(dbDir, { recursive: true });
 
-      const migrationsDir = join(pkgDir, 'tools', 'mcp', 'migrations');
+      const migrationsDir = join(pkgDir, 'vendor', 'observability-store', 'migrations');
       const files = ['001_observability.sql', '002_legacy-import-receipts.sql', '003_store_meta.sql', '004_companion-activity.sql'];
 
       let db = new DatabaseSync(dbPath);
@@ -77,16 +77,23 @@ for (const browser of ['chrome', 'edge']) {
       db.close();
 
       const runOpts = { env: { ...process.env, HOME: home, NODE_NO_WARNINGS: '1' }, timeout: 10000, maxBuffer: 65536 };
-      const helper = join(pkgDir, 'tools', 'mcp', 'companion-data.mjs');
       const hostBin = join(pkgDir, 'apps', 'companion-native-host', 'bin', `nexus-companion-native-host-${browser}.mjs`);
 
       const originalBytes = readFileSync(dbPath);
-      const resHelperPre = spawnSync(process.execPath, [helper, 'status'], runOpts);
-      assert.equal(resHelperPre.status, startVersion === 3 ? 1 : 0);
-      assert.equal(resHelperPre.stderr.length, 0);
-      const setupRefused = spawnSync(process.execPath, [helper, 'initialize', '--confirm'], runOpts);
-      assert.equal(setupRefused.status, 1);
-      assert.equal(JSON.parse(setupRefused.stdout).error, 'companion_store_exists');
+      // The CLI-owned data helper is no longer staged: probe the old store
+      // directly. A v3 store has no tool_activity table yet, so status-style
+      // reads fail closed without touching the file; a v4 store reads fine.
+      const probePre = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        assert.equal(probePre.prepare('SELECT MAX(version) as v FROM schema_migrations').get().v, startVersion);
+        const tables = probePre.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tool_activity'").all();
+        assert.equal(tables.length, startVersion === 3 ? 0 : 1);
+        if (startVersion === 3) {
+          assert.throws(() => probePre.prepare('SELECT COUNT(*) AS n FROM tool_activity').get());
+        } else {
+          assert.equal(probePre.prepare('SELECT COUNT(*) AS n FROM tool_activity').get().n, 1);
+        }
+      } finally { probePre.close(); }
       assert.deepEqual(readFileSync(dbPath), originalBytes);
 
       db = new DatabaseSync(dbPath, { readOnly: true });
@@ -118,8 +125,23 @@ for (const browser of ['chrome', 'edge']) {
       assert.equal(existsSync(join(home, '.config', 'microsoft-edge')), false);
       db.close();
 
-      const resHelperPost = spawnSync(process.execPath, [helper, 'status'], runOpts);
-      assert.equal(resHelperPost.status, 0, 'Helper status must exit 0 post-migration');
+      // The packaged vendored store must re-migrate idempotently and still
+      // see the upgraded store as current, with collection paused by the 005
+      // upgrade and history preserved.
+      const resStorePost = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        import { createObservabilityStore } from './vendor/observability-store/lib/observability-store.mjs';
+        import { DatabaseSync } from 'node:sqlite';
+        import { join } from 'node:path';
+        const databasePath = join(process.env.HOME, '.config/nexus/logs/observability.sqlite');
+        createObservabilityStore({databasePath}).migrate();
+        const db = new DatabaseSync(databasePath, {readOnly: true});
+        try {
+          if (db.prepare('SELECT MAX(version) as v FROM schema_migrations').get().v !== 5) throw new Error('fixture_version_invalid');
+          const settings = db.prepare('SELECT collection_enabled, collection_started_at FROM companion_settings WHERE id=1').get();
+          if (settings.collection_enabled !== 0 || settings.collection_started_at !== null) throw new Error('fixture_settings_invalid');
+        } finally { db.close(); }
+      `], { ...runOpts, cwd: pkgDir });
+      assert.equal(resStorePost.status, 0, 'Packaged vendored store must re-migrate idempotently post-upgrade');
 
       if (startVersion === 4) {
         const boundaryIso = new Date(Date.now() - 1000).toISOString();

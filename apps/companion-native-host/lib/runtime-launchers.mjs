@@ -23,7 +23,7 @@ function verifiedRoot(runtimeRoot) {
     const seen = new Set();
     for (const file of manifest.files) {
       if (!file || typeof file.path !== "string" || seen.has(file.path)
-          || (!NATIVE_HOST_PAYLOAD_FILES.includes(file.path) && !/^tools\/mcp\/migrations\/\d{3}_[a-z0-9_-]+\.sql$/.test(file.path))
+          || (!NATIVE_HOST_PAYLOAD_FILES.includes(file.path) && !/^vendor\/observability-store\/migrations\/\d{3}_[a-z0-9_-]+\.sql$/.test(file.path))
           || typeof file.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(file.sha256)
           || file.mode !== (file.path.startsWith("apps/companion-native-host/bin/") ? 0o755 : 0o644)) throw failure("launcher_payload_invalid");
       seen.add(file.path);
@@ -39,7 +39,7 @@ function verifiedRoot(runtimeRoot) {
       if (createHash("sha256").update(bytes).digest("hex") !== file.sha256) throw failure("launcher_payload_invalid");
     }
     if (NATIVE_HOST_PAYLOAD_FILES.some((path) => !seen.has(path))
-        || !manifest.files.some(({ path }) => path.startsWith("tools/mcp/migrations/"))) throw failure("launcher_payload_invalid");
+        || !manifest.files.some(({ path }) => path.startsWith("vendor/observability-store/migrations/"))) throw failure("launcher_payload_invalid");
     return root;
   } catch { throw failure("launcher_payload_invalid"); }
 }
